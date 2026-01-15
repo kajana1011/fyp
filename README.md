@@ -77,12 +77,93 @@ Core pipeline (recommended):
 4. Thresholding: expose a configurable threshold (e.g., 0.75) to classify duplicates; admin can tune per corpus and year window.
 5. History scope: query projects from current year or last N years depending on admin setting.
 
+### Similarity Score Classification
+
+After computing the final similarity score (combined / weighted from embedding, lexical, and edit-distance signals), the system classifies results as follows:
+
+| Similarity Score | System Action |
+|---:|---|
+| < 0.6 | Auto-approve (no duplicate action required) |
+| 0.6 – 0.8 | Flag for admin review (present matches and explainability info) |
+| ≥ 0.8 | Auto-flag as duplicate (prevent submission or require student action) |
+
+These ranges are configurable by the admin; the defaults above provide a balance between minimizing false positives (admins review medium scores) and catching high-confidence duplicates automatically.
+
+### Recommended Pipeline (TF-IDF → SBERT → Decision)
+
+For submissions the system will apply a two-stage pipeline by default:
+
+1. TF-IDF similarity (fast lexical filter): quickly retrieve top candidate projects that share lexical overlap or important tokens with the new submission. This stage is very fast and provides explainable token matches for admin review.
+2. SBERT similarity (semantic confirmation): compute or reuse precomputed SBERT embeddings for the submission and re-rank the TF-IDF candidates by cosine similarity to confirm semantic similarity and catch paraphrases.
+3. Decision + admin review: combine TF-IDF and SBERT signals (with optional Levenshtein/title guard) to compute the final similarity score and apply the classification rules (auto-approve / flag for review / auto-flag duplicate).
+
+Flow (visual):
+
+New project submitted
+	↓
+TF-IDF similarity (fast lexical filter)
+	↓
+SBERT similarity (semantic confirmation)
+	↓
+Decision + admin review
+
+Notes:
+- TF-IDF stage reduces the number of expensive embedding comparisons and provides lexical evidence.
+- SBERT stage improves recall for rephrased content and reduces false negatives.
+- Weighting between TF-IDF and SBERT is configurable; tune on a labeled validation set.
+
 Performance & scaling:
 - Precompute and persist vector embeddings for all stored projects; update embeddings on create/update.
 - Use approximate nearest neighbor (ANN) index (e.g., Faiss, Annoy) for large corpora.
 
 Explainability:
 - Provide the administrator with the matched fields, similarity score, and top contributing tokens/phrases for each match.
+
+## Algorithm Choice & Rationale
+
+1) What algorithm will you use and why?
+
+- Primary: Sentence embeddings (SBERT / sentence-transformers) for semantic similarity — chosen because embeddings capture meaning and paraphrase relationships, not just surface word overlap. SBERT gives high-quality sentence/passage vectors with efficient cosine similarity.
+- Secondary (hybrid): TF-IDF + cosine for fast lexical checks and explainability; Levenshtein for short-title typo/near-match detection. A hybrid approach balances speed, explainability, and semantic accuracy.
+
+2) How will you use the algorithm?
+
+- Preprocess text (normalize, strip punctuation, basic token filtering).
+- Compute sentence embeddings for `title`, `objectives`, and `implementation_summary` at create/update and store them alongside the DB record.
+- Use an ANN index (Faiss/Annoy) over embeddings to quickly retrieve nearest neighbors for a submitted project, then compute final similarity scores by combining embedding cosine similarity, TF-IDF lexical score, and Levenshtein where applicable.
+- Apply configurable thresholds and return the top-K matches with per-field scores and explanations to the admin/UI.
+
+3) What will be your minimum storage?
+
+- Storage per project (approximate):
+	- Embedding vector (example SBERT 768-dim float32): 768 * 4 bytes ≈ 3,072 bytes (~3 KB).
+	- Project metadata (title/objectives/summary, indices, timestamps): ~1 KB (varies).
+	- Total ≈ 4 KB per project.
+- Examples:
+	- 10,000 projects → ~40 MB for embeddings + metadata.
+	- 100,000 projects → ~400 MB. ANN index and any replication/backups add extra overhead (order of tens to hundreds of MB depending on index type and compression). Using quantization (Faiss PQ/OPQ) can reduce vector storage significantly (e.g., to ~0.5–1 KB per vector).
+
+4) What is the significance of your project?
+
+- Saves faculty time: automates repetitive duplicate checks during final-year evaluations.
+- Improves fairness and originality: ensures students work on distinct, meaningful projects and reduces accidental reuse.
+- Administrative efficiency: configurable historical scope, audit trails, and automated mentor assignment reduces manual workload.
+- Research/analytics: collected data enables trends analysis (popular topics, mentor loads, common rephrasings) and supports continuous improvement.
+
+5) How will the chosen algorithm detect similarity beyond word overlap (rephrasing)?
+
+- Sentence embeddings map semantically similar sentences/paragraphs to nearby vectors even when wording changes; SBERT is trained to bring paraphrases closer in vector space, so rephrased objectives or summaries produce high cosine similarity despite low token overlap.
+- The hybrid pipeline reinforces this: TF-IDF catches exact or partial lexical matches, Levenshtein detects near-typos, and the embedding similarity captures semantic equivalence. Combining these signals with configurable weights reduces false negatives for paraphrases and false positives for coincidental word overlap.
+
+### Hybrid as the Default and When a Single Algorithm Is Used
+
+- Default choice: **hybrid pipeline** (ANN over SBERT embeddings + TF-IDF/BM25 + title-level Levenshtein) because it balances semantic recall, lexical explainability, typo-robustness, and scalability. The hybrid design provides high recall for paraphrases (embeddings), transparent lexical evidence for admin review (TF-IDF/BM25), and short-text guards (Levenshtein) for titles.
+- When only embeddings (SBERT) are used: choose this when semantic matching is the priority and you have resources to host embeddings and an ANN index, and when privacy requirements allow storing embeddings. Use embeddings-only retrieval for broad semantic search where explainability is less critical.
+- When only TF-IDF/BM25 is used: choose this lightweight option when constrained by compute, memory, or strict privacy (no embeddings/external APIs), or when the corpus is small and phrasing differences are minimal. TF-IDF/BM25 is fast, explainable, and easy to host.
+- When only Levenshtein/n-gram is used: apply this narrowly for very short fields (project `title`) to catch typos and small edits; it is not sufficient alone for semantic paraphrase detection.
+
+In practice we start with the hybrid default and provide admin-configurable fallbacks so operators can run TF-IDF-only or embeddings-only modes when operational constraints demand it.
+
 
 ## Mentor Assignment Design
 
@@ -169,6 +250,24 @@ Local dev tips:
 
 - Admins can tune how many years back to search for duplicates; increasing the window reduces false negatives but may increase false positives.
 - Provide a review workflow where flagged duplicates are presented to faculty with an option to mark false positives.
+
+## Notifications & Mentor Calendar
+
+- Mentor Availability & Notifications: Mentors publish available meeting time slots. Supervisees are notified of published slots and are expected to attend at the scheduled time. Students may request a reschedule which requires mentor approval; student-initiated cancellations must be approved by the mentor or follow a configured cancellation policy.
+- Mentor Availability Calendar: Mentors maintain a calendar of available time slots. The calendar is visible to their supervisees to view scheduled meetings and availability.
+- Appointment Deadlines: Admins can configure deadlines for mentor-student appointments (e.g., meetings must be scheduled X days before a review). The system surfaces upcoming deadlines in mentor and student dashboards.
+- Appointment History: Maintain a history of appointment records and statuses (proposed, confirmed, completed, cancelled, reschedule_requested) per mentor and per student for auditing and tracking.
+- Notification channels: in-app push notifications are primary; optionally add email notifications for critical events.
+
+
+Implementation notes:
+
+- Model additions: `Appointment` entity with fields: `id`, `mentor_id`, `student_id`, `start_time`, `end_time`, `status` (enum: `proposed|confirmed|completed|cancelled|reschedule_requested`), `created_at`, `updated_at`, `notes`, `reschedule_requested_by` (nullable), `cancelled_by` (nullable), `cancel_reason` (nullable).
+- Calendar backend: use iCalendar or a simple time-slot model; expose endpoints for CRUD, availability queries, and listing confirmed appointments.
+- Workflow & validation: mentors publish available slots; when a mentor publishes a slot the system notifies supervisees. Students can confirm attendance or request rescheduling; reschedule requests require mentor approval. Student cancellations are subject to mentor/admin approval per policy.
+- Conflicts & validation: prevent overlapping confirmed appointments for the same mentor; enforce `max_load` constraints where applicable.
+- Background jobs: scheduled reminder notifications, automatic enforcement of appointment deadlines, and periodic cleanup/archival jobs.
+- UI: calendar view (week/month), notification bell, confirm/reschedule UX for students, mentor approval screens, and an appointment history list.
 
 ## Contact / Maintainer
 
