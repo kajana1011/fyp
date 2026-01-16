@@ -2,21 +2,26 @@
 
 ## Table of Contents
 
-- Project Overview
-- Objectives
-- Key Features
+- [Project Overview](#project-overview)
+- [Objectives](#objectives)
+- [Key Features](#key-features)
 
-- Architecture & Tech Stack
-- Data Model
-- Duplicate Detection Design
+- [Architecture & Tech Stack](#architecture--tech-stack)
+- [Data Model](#data-model-recommended)
+- [Duplicate Detection Design](#duplicate-detection-design)
 
-- Mentor Assignment Design
-- APIs and Endpoints (suggested)
-- Configuration
+- [Algorithm Choice & Rationale](#algorithm-choice--rationale)
+- [Mentor Assignment Design](#mentor-assignment-design)
+- [APIs and Endpoints (suggested)](#apis-and-endpoints-suggested)
+- [Configuration](#configuration)
 
-- Developer Setup & Run
-- Testing
-- Extensibility & Contribution
+- [Developer Setup & Run](#developer-setup--run)
+- [Testing](#testing)
+- [Extensibility & Contribution](#extensibility--contribution)
+
+- [Admin Notes](#admin-notes)
+- [Notifications & Mentor Calendar](#notifications--mentor-calendar)
+- [Contact / Maintainer](#contact--maintainer)
 
 ## Project Overview
 
